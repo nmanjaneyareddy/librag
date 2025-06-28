@@ -16,8 +16,8 @@ def clean_answer(text):
     return text.strip()
 
 # ✅ Streamlit setup
-st.set_page_config(page_title="OII-AI Assistant", page_icon="")
-st.markdown("🤖 OII-AI Assistant")
+st.set_page_config(page_title="IGIDRLIB AI", page_icon="")
+st.markdown("🤖 LibAI Assistant")
 st.markdown("Ask anything about OII database.")
 
 # 📦 Load or build vectorstore
@@ -53,4 +53,4 @@ for role, msg in st.session_state.chat_history:
     if role == "user":
         st.chat_message("user").write(f"Me: {msg}")
     else:
-        st.chat_message("assistant").write(f"OII-AI Assistant: {msg}")
+        st.chat_message("assistant").write(f"LibAI Assistant: {msg}")
