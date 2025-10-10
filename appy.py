@@ -18,7 +18,7 @@ def clean_answer(text):
 # ✅ Streamlit setup
 st.set_page_config(page_title="IGIDRLIB AI", page_icon="")
 st.markdown("🤖 LibAI Assistant")
-st.markdown("Ask anything about OII database.")
+st.markdown("Ask anything about IGIDR Library")
 
 # 📦 Load or build vectorstore
 if not os.path.exists("faiss_index"):
