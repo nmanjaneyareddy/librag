@@ -37,7 +37,7 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # 📩 User chat input
-user_input = st.chat_input("Chat anything about OII Database...")
+user_input = st.chat_input("Chat anything about IGIDR Library...")
 
 if user_input:
     with st.spinner("🤖 Searching..."):
