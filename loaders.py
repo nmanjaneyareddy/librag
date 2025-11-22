@@ -1,31 +1,15 @@
 # loaders.py
-
+# try community loaders import (package name on PyPI: langchain-community)
 from langchain_community.document_loaders import PyPDFLoader, BSHTMLLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-import os
 
-def load_documents():
-    docs = []
-
-    # Load PDF
-    if os.path.exists("data/igidr_library_details.pdf"):
-        pdf_loader = PyPDFLoader("data/igidr_library_details.pdf")
-        docs += pdf_loader.load()
-    else:
-        print("⚠️ PDF file not found at data/igidr_library_details.pdf")
-
-    # Load HTML using built-in parser
-    if os.path.exists("data/li.html"):
-        html_loader = BSHTMLLoader("data/li.html", bs_kwargs={"features": "html.parser"})
-        docs += html_loader.load()
-    else:
-        print("⚠️ HTML file not found at data/li.html")
-
-    if not docs:
-        raise ValueError("No valid documents found in the data/ directory.")
-    
-    return docs
-
-def split_documents(docs):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
-    return splitter.split_documents(docs)
+# robust import for the splitter (works across different langchain versions)
+try:
+    # preferred (separate package)
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except Exception:
+    try:
+        # newer langchain layout
+        from langchain.text_splitters import RecursiveCharacterTextSplitter
+    except Exception:
+        # older / fallback layout (some older examples)
+        from langchain.text_splitter import RecursiveCharacterTextSplitter
