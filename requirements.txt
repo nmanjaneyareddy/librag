@@ -16,3 +16,5 @@ langchain-community
 langchain-text-splitters
 chromadb
 tiktoken
+langchain-openai
+openai
