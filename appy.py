@@ -1,11 +1,3 @@
-# DEBUG only — remove after fix
-import traceback
-try:
-    from vectorstore import create_vector_store, load_vector_store
-except Exception:
-    traceback.print_exc()
-    raise
-
 import streamlit as st
 from loaders import load_documents, split_documents
 from vectorstore import create_vector_store, load_vector_store
