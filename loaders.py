@@ -1,4 +1,4 @@
-# loaders.py (top)
+# loaders.py
 import os
 import traceback
 
@@ -29,3 +29,31 @@ except Exception:
             print("ERROR importing any RecursiveCharacterTextSplitter variant:", type(e).__name__, e)
             traceback.print_exc()
             raise
+
+def load_documents():
+    docs = []
+
+    # Load PDF
+    pdf_path = "data/igidr_library_details.pdf"
+    if os.path.exists(pdf_path):
+        pdf_loader = PyPDFLoader(pdf_path)
+        docs += pdf_loader.load()
+    else:
+        print(f"⚠️ PDF file not found at {pdf_path}")
+
+    # Load HTML using built-in parser
+    html_path = "data/li.html"
+    if os.path.exists(html_path):
+        html_loader = BSHTMLLoader(html_path, bs_kwargs={"features": "html.parser"})
+        docs += html_loader.load()
+    else:
+        print(f"⚠️ HTML file not found at {html_path}")
+
+    if not docs:
+        raise ValueError("No valid documents found in the data/ directory.")
+    
+    return docs
+
+def split_documents(docs):
+    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
+    return splitter.split_documents(docs)
