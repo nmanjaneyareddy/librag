@@ -10,3 +10,9 @@ openai>=1.0
 langchain>=0.1
 langchain>=0.0.350
 langchain-text-splitters
+streamlit
+langchain>=0.0.350
+langchain-community
+langchain-text-splitters
+chromadb
+tiktoken
