@@ -18,3 +18,4 @@ chromadb
 tiktoken
 langchain-openai
 openai
+langchain-classic
