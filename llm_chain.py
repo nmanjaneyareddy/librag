@@ -1,6 +1,7 @@
 import streamlit as st
 from langchain_openai import ChatOpenAI
-from langchain.chains.retrieval_qa.base import RetrievalQA
+# llm_chain.py (top)
+from langchain_classic.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
 def setup_qa_chain(vectorstore):
