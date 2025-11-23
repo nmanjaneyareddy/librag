@@ -1,9 +1,7 @@
 # /mount/src/librag/llm_chain.py
 # DeepSeek-compatible LLM factory + RetrievalQA setup
 # Expects Streamlit secrets to contain DEEPSEEK_API_KEY
-import langchain
-import langchain.chains
-st.write("LangChain version:", langchain.__version__)
+
 
 import streamlit as st
 
