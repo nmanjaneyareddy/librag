@@ -1,5 +1,4 @@
 streamlit>=1.33
-langchain>=0.1.14
 langchain-community>=0.0.30
 faiss-cpu
 sentence-transformers
@@ -13,3 +12,8 @@ tiktoken
 langchain-openai
 openai
 langchain-classic
+# Source - https://stackoverflow.com/a
+# Posted by agilgur5, modified by community. See post 'Timeline' for change history
+# Retrieved 2025-11-23, License - CC BY-SA 4.0
+langchain>=1.0.5
+
