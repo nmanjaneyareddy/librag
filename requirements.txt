@@ -1,4 +1,4 @@
-requirements : streamlit>=1.33
+streamlit>=1.33
 langchain>=0.1.14
 langchain-community>=0.0.30
 faiss-cpu
