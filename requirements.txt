@@ -20,10 +20,3 @@ langchain-openai
 openai
 langchain-classic
 langchain-openai
-openai
-langchain>=0.0.350
-langchain-community
-langchain-text-splitters
-streamlit
-chromadb
-tiktoken
