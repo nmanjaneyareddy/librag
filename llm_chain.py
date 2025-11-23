@@ -1,7 +1,9 @@
 import streamlit as st
 
 from langchain_openai import ChatOpenAI
+from langchain.chains.retrieval_qa import RetrievalQA
 from langchain.prompts import PromptTemplate
+
 
 # NEW LangChain RAG imports
 from langchain.chains import create_retrieval_chain
