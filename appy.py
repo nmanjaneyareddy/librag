@@ -1,56 +1,59 @@
+# /mount/src/librag/llm_chain.py
+# DeepSeek-compatible LLM factory + RetrievalQA setup
+# Expects Streamlit secrets to contain DEEPSEEK_API_KEY
+
 import streamlit as st
-from loaders import load_documents, split_documents
-from vectorstore import create_vector_store, load_vector_store
-from llm_chain import setup_qa_chain
-import os
-import re  # For cleaning output
 
-# 🧼 Function to clean verbose LLM output
-def clean_answer(text):
-    # Remove everything before the last "Answer:" if present
-    text = re.sub(r".*?Answer\s*:\s*", "", text, flags=re.IGNORECASE | re.DOTALL)
+# imports as in your snippet (will need langchain installed)
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
 
-    # Remove any leftover "Context:", "Use the following context", etc.
-    text = re.sub(r"(Context\s*:|Use the following context.*?)", "", text, flags=re.IGNORECASE | re.DOTALL)
 
-    return text.strip()
+def setup_qa_chain(vectorstore):
+    """
+    Create and return a RetrievalQA chain using a DeepSeek-compatible
+    ChatOpenAI wrapper. Assumes Streamlit secrets contains DEEPSEEK_API_KEY.
 
-# ✅ Streamlit setup
-st.set_page_config(page_title="IGIDRLIB AI", page_icon="")
-st.markdown("🤖 LibAI Assistant")
-st.markdown("Ask anything about IGIDR Library")
+    vectorstore: a LangChain-style vectorstore (must implement as_retriever()).
+    """
 
-# 📦 Load or build vectorstore
-if not os.path.exists("faiss_index"):
-    with st.spinner("🔄 Relax..."):
-        docs = load_documents()
-        chunks = split_documents(docs)
-        vectorstore = create_vector_store(chunks)
-else:
-    vectorstore = load_vector_store()
+    # ✅ DeepSeek API Key & Base URL — stored in Streamlit secrets
+    deepseek_api_key = st.secrets["DEEPSEEK_API_KEY"]
+    deepseek_base_url = "https://api.deepseek.com/v1"  # adjust if DeepSeek base differs
 
-# 🤖 Setup QA chain
-qa_chain = setup_qa_chain(vectorstore)
+    # ✅ Initialize the LLM
+    # Note: ChatOpenAI wrapper accepts openai_api_key and openai_api_base kwargs in many setups.
+    # If your langchain distribution uses a different constructor, adjust accordingly.
+    llm = ChatOpenAI(
+        model_name="deepseek-chat",     # change to actual model name if needed
+        temperature=0.2,
+        max_tokens=512,
+        openai_api_key=deepseek_api_key,
+        openai_api_base=deepseek_base_url
+    )
 
-# 💬 Initialize chat history
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    # ✅ Prompt
+    prompt = PromptTemplate(
+        input_variables=["context", "question"],
+        template="""
+Use the following context to answer the user's question clearly and concisely.
 
-# 📩 User chat input
-user_input = st.chat_input("Chat anything about IGIDR Library...")
+Context:
+{context}
 
-if user_input:
-    with st.spinner("🤖 Searching..."):
-        result = qa_chain.invoke({"input": user_input})
-        raw_answer = result.get("result", "")
-        answer = clean_answer(raw_answer)  # Clean the output before displaying
+Question:
+{question}
 
-        st.session_state.chat_history.append(("user", user_input))
-        st.session_state.chat_history.append(("bot", answer))
+Answer:
+"""
+    )
 
-# 💬 Display chat history
-for role, msg in st.session_state.chat_history:
-    if role == "user":
-        st.chat_message("user").write(f"Me: {msg}")
-    else:
-        st.chat_message("assistant").write(f"LibAI Assistant: {msg}")
+    # Build and return RetrievalQA chain
+    return RetrievalQA.from_chain_type(
+        llm=llm,
+        retriever=vectorstore.as_retriever(),
+        chain_type="stuff",
+        chain_type_kwargs={"prompt": prompt},
+        return_source_documents=False
+    )
