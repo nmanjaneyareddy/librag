@@ -6,7 +6,7 @@ import streamlit as st
 
 # imports as in your snippet (will need langchain installed)
 from langchain_openai import ChatOpenAI
-from langchain.chains import RetrievalQA
+from langchain.chains.retrieval_qa import RetrievalQA
 from langchain.prompts import PromptTemplate
 
 
