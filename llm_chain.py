@@ -1,7 +1,6 @@
 import streamlit as st
 
 from langchain_openai import ChatOpenAI
-from langchain.chains.retrieval_qa import RetrievalQA
 from langchain.prompts import PromptTemplate
 
 
