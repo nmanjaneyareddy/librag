@@ -41,7 +41,7 @@ user_input = st.chat_input("Chat anything about IGIDR Library...")
 
 if user_input:
     with st.spinner("🤖 Searching..."):
-        result = qa_chain({"query": user_input})
+        result = qa_chain.invoke({"input": user_input})
         raw_answer = result.get("result", "")
         answer = clean_answer(raw_answer)  # Clean the output before displaying
 
