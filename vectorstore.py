@@ -1,125 +1,134 @@
-# /mnt/data/vectorstore.py
-# Drop-in vectorstore loader for Streamlit + LangChain (FAISS + HuggingFace embeddings)
-# - Exposes load_vector_store()
-# - Exports `vectorstore` at module level (may be None until loaded)
+# FINAL vectorstore.py (FAISS + SentenceTransformer only, NO LANGCHAIN)
 
 import os
-from typing import Optional
+from typing import List, Dict, Any
+import numpy as np
 
-INDEX_DIR = "faiss_index"       # where FAISS index will be saved/loaded
-DOCS_DIR = "data/documents"     # default documents folder (adjust if needed)
+# Paths where documents can exist
+DOC_PATHS = [
+    "data/documents",               # Repo folder
+    "/mnt/data",                    # Streamlit uploaded files
+    "/mount/src/librag/data"        # Your actual PDF location
+]
 
-vectorstore = None  # module-level export for convenience
-
-
-def _ensure_packages():
-    try:
-        import langchain
-        # import kept lazy
-    except Exception as e:
-        raise ImportError(
-            "Required packages are missing. Make sure requirements.txt includes langchain, langchain-community, sentence-transformers, faiss-cpu, etc."
-        ) from e
-
-
-def _load_existing_index(embeddings):
-    """
-    Try to load a saved FAISS index from INDEX_DIR.
-    Returns the vectorstore or raises if not present.
-    """
-    from langchain_community.vectorstores import FAISS
-
-    if not os.path.exists(INDEX_DIR):
-        raise FileNotFoundError(f"Index folder '{INDEX_DIR}' not found.")
-    # FAISS.load_local(index_path, embeddings) signature for langchain-community
-    vs = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
-    return vs
+def _chunk_text(text, chunk_size=1000, overlap=200):
+    chunks = []
+    start = 0
+    L = len(text)
+    while start < L:
+        end = min(start + chunk_size, L)
+        chunks.append(text[start:end])
+        start = max(0, end - overlap)
+    return chunks
 
 
-def _build_index_from_docs(embeddings):
-    """
-    Load files from DOCS_DIR, split into documents and build FAISS index.
-    Saves index to INDEX_DIR for reuse.
-    """
-    from langchain.document_loaders import PyPDFLoader, TextLoader
-    from langchain.text_splitter import RecursiveCharacterTextSplitter
-    from langchain.schema import Document
-    from langchain_community.vectorstores import FAISS
-
-    if not os.path.exists(DOCS_DIR):
-        raise FileNotFoundError(f"Documents folder '{DOCS_DIR}' not found. Put PDFs / .txt files there or change DOCS_DIR.")
-
+def _load_all_docs() -> List[Dict[str, Any]]:
+    """Load PDFs/TXT/MD from all known paths (NO langchain)."""
+    from pypdf import PdfReader
     docs = []
-    # walk DOCS_DIR and load PDFs and txts
-    for root, _, files in os.walk(DOCS_DIR):
-        for fname in files:
-            path = os.path.join(root, fname)
-            lower = fname.lower()
-            try:
-                if lower.endswith(".pdf"):
-                    loader = PyPDFLoader(path)
-                    loaded = loader.load()
-                elif lower.endswith(".txt") or lower.endswith(".md"):
-                    loader = TextLoader(path, encoding="utf-8")
-                    loaded = loader.load()
-                else:
-                    # skip unknown extensions
+    idx = 0
+
+    for base in DOC_PATHS:
+        if not os.path.exists(base):
+            continue
+
+        for root, _, files in os.walk(base):
+            for fname in files:
+                path = os.path.join(root, fname)
+                lower = fname.lower()
+
+                try:
+                    if lower.endswith(".pdf"):
+                        reader = PdfReader(path)
+                        text = "\n".join([(p.extract_text() or "") for p in reader.pages])
+
+                    elif lower.endswith(".txt") or lower.endswith(".md"):
+                        with open(path, "r", encoding="utf-8") as f:
+                            text = f.read()
+
+                    else:
+                        continue
+
+                    chunks = _chunk_text(text)
+                    for i, c in enumerate(chunks):
+                        docs.append({
+                            "id": f"{idx}",
+                            "text": c,
+                            "meta": {"source": path, "chunk": i}
+                        })
+                        idx += 1
+
+                except Exception:
                     continue
-                docs.extend(loaded)
-            except Exception:
-                # don't fail the whole run for one bad file
-                continue
+
+    return docs
+
+
+class SimpleFAISSVectorStore:
+    """FAISS + Sentence-Transformer wrapper compatible with LangChain retriever API."""
+
+    def __init__(self, model_name="sentence-transformers/all-mpnet-base-v2"):
+        from sentence_transformers import SentenceTransformer
+        import faiss
+
+        self.model = SentenceTransformer(model_name)
+        self.index = None
+        self.texts = []
+        self.metas = []
+
+    def build(self, docs):
+        import faiss
+
+        texts = [d["text"] for d in docs]
+        if not texts:
+            raise ValueError("No text to build index.")
+
+        embeddings = self.model.encode(texts, convert_to_numpy=True).astype(np.float32)
+
+        dim = embeddings.shape[1]
+        index = faiss.IndexFlatL2(dim)
+        index.add(embeddings)
+
+        self.index = index
+        self.texts = texts
+        self.metas = [d["meta"] for d in docs]
+
+    def similarity_search(self, query, k=4):
+        q = self.model.encode([query], convert_to_numpy=True).astype(np.float32)
+        D, I = self.index.search(q, k)
+        results = []
+        for score, idx in zip(D[0], I[0]):
+            if 0 <= idx < len(self.texts):
+                results.append({
+                    "page_content": self.texts[idx],
+                    "metadata": self.metas[idx],
+                    "score": float(score)
+                })
+        return results
+
+    def as_retriever(self, search_kwargs=None):
+        parent = self
+        k = (search_kwargs or {}).get("k", 4)
+
+        class Retriever:
+            def get_relevant_documents(self, query):
+                docs = parent.similarity_search(query, k)
+                class DocObj:
+                    def __init__(self, t, m): self.page_content = t; self.metadata = m
+                return [DocObj(d["page_content"], d["metadata"]) for d in docs]
+
+        return Retriever()
+
+
+def load_vector_store():
+    docs = _load_all_docs()
 
     if not docs:
-        raise RuntimeError(f"No documents found in {DOCS_DIR} (supported: .pdf, .txt, .md).")
+        raise RuntimeError(
+            "No documents found in:\n" + "\n".join(DOC_PATHS) +
+            "\nMake sure igidr_library_details.pdf exists."
+        )
 
-    # split into chunks
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    docs_out = splitter.split_documents(docs)
-
-    # build FAISS vectorstore
-    vs = FAISS.from_documents(docs_out, embeddings)
-    # save to disk for future loads
-    try:
-        vs.save_local(INDEX_DIR)
-    except Exception:
-        # saving may fail depending on versions — ignore but warn
-        pass
-    return vs
-
-
-def load_vector_store() -> object:
-    """
-    Public loader function used by app.py.
-    Returns a vectorstore instance (FAISS-like) that supports .as_retriever() or .similarity_search().
-    """
-    global vectorstore
-    _ensure_packages()
-
-    # Import here to avoid import-time failures when packages missing
-    try:
-        # embeddings: HuggingFace wrapper (works well with sentence-transformers)
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-    except Exception:
-        raise ImportError("langchain_community.embeddings.HuggingFaceEmbeddings not available. Install langchain-community and sentence-transformers.")
-
-    # create embeddings object
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-
-    # 1) try loading existing index
-    try:
-        vs = _load_existing_index(embeddings)
-        vectorstore = vs
-        return vs
-    except Exception:
-        # 2) try to build from docs if index missing
-        vs = _build_index_from_docs(embeddings)
-        vectorstore = vs
-        return vs
-
-
-# Optional: attempt to load at import time (comment out if you prefer lazy loading)
-# try:
-#     vectorstore = load_vector_store()
-# except Exception:
-#     vectorstore = None
+    store = SimpleFAISSVectorStore()
+    store.build(docs)
+    return store
