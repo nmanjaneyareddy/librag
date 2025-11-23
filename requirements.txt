@@ -1,19 +1,13 @@
-streamlit>=1.33
-langchain-community>=0.0.30
+streamlit>=1.33.0
+langchain==0.1.20
+langchain-community==0.0.30
+langchain-openai==0.0.8
+openai>=1.12.0
 faiss-cpu
 sentence-transformers
+chromadb
+tiktoken
 pypdf
 beautifulsoup4
 huggingface_hub
-openai>=1.0
 langchain-text-splitters
-chromadb
-tiktoken
-langchain-openai
-openai
-langchain-classic
-# Source - https://stackoverflow.com/a
-# Posted by agilgur5, modified by community. See post 'Timeline' for change history
-# Retrieved 2025-11-23, License - CC BY-SA 4.0
-langchain>=1.0.5
-
