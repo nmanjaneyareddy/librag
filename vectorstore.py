@@ -11,7 +11,7 @@ from typing import List, Dict, Any
 import numpy as np
 
 # OPTIONAL: change where your documents live
-DOCS_DIR = "data"
+DOCS_DIR = "data/documents"
 INDEX_DIR = "faiss_index_np"  # folder where we save index + metadata (optional)
 
 # Basic chunker: split text into approx chunk_size characters with overlap
