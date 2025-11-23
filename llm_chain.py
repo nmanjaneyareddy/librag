@@ -1,7 +1,8 @@
 # llm_chain.py
-# Replace your current llm_chain.py with this file.
+# Replace the whole file with this content (ensures robust retriever discovery).
 
 from typing import Any, Dict, List
+import inspect
 
 # PromptTemplate import with fallbacks
 try:
@@ -78,13 +79,7 @@ def _call_llm(llm, prompt_text: str) -> str:
 class SimpleRetrievalQA:
     """
     Minimal retrieval + LLM wrapper used when langchain's RetrievalQA isn't available.
-    Works with retrievers exposing any of the common method names:
-      - get_relevant_documents(query)
-      - get_relevant_entries(query)
-      - retrieve(query)
-      - similarity_search(query, k=...)
-      - similarity_search_with_score(query, k=...)
-      - similarity_search_by_vector(...) (less common)
+    Uses a very defensive _fetch_docs that attempts many call patterns.
     """
 
     def __init__(self, retriever, llm_factory, prompt_template: str = None, k: int = 4):
@@ -99,83 +94,115 @@ class SimpleRetrievalQA:
             )
         )
 
+    def _try_call(self, fn, query: str):
+        """Try calling fn with several plausible signatures and return result or raise."""
+        try:
+            # try (query, k=...)
+            try:
+                return fn(query, k=self.k)
+            except TypeError:
+                pass
+            # try (query, k)
+            try:
+                return fn(query, self.k)
+            except TypeError:
+                pass
+            # try (query,)
+            try:
+                return fn(query)
+            except TypeError:
+                pass
+            # try no args
+            try:
+                return fn()
+            except TypeError:
+                pass
+        except Exception:
+            # If the function raised for this query, propagate up to allow trying another function.
+            raise
+        raise TypeError("Function did not accept common signatures")
+
     def _fetch_docs(self, query: str) -> List[Any]:
         """
-        Normalise many different retriever APIs to a list of document-like objects.
+        Very defensive method detection:
+         - tries known method names first
+         - then scans all attributes for callable names containing keywords
+         - tries calling with multiple signatures
         """
         r = self.retriever
 
-        # If object is a retriever wrapper (common), try known retriever method names first
-        # 1. LangChain retriever standard
-        if hasattr(r, "get_relevant_documents"):
-            return r.get_relevant_documents(query)[: self.k]
-
-        # 2. Some libraries use this
-        if hasattr(r, "get_relevant_entries"):
-            return r.get_relevant_entries(query)[: self.k]
-
-        # 3. Common alternative name
-        if hasattr(r, "retrieve"):
-            try:
-                return r.retrieve(query)[: self.k]
-            except TypeError:
-                # maybe retrieve(query, k=...) signature
+        # 1) Known names first (fast)
+        candidates = [
+            ("get_relevant_documents", True),
+            ("get_relevant_entries", True),
+            ("retrieve", True),
+            ("similarity_search", True),
+            ("similarity_search_with_score", True),
+            ("similarity_search_by_vector", True),
+            ("search", True),
+            ("query", True),
+            ("similar_search", True),
+        ]
+        for name, _ in candidates:
+            fn = getattr(r, name, None)
+            if callable(fn):
                 try:
-                    return r.retrieve(query, k=self.k)[: self.k]
+                    res = self._try_call(fn, query)
+                    # if similarity_search_with_score returns (doc, score) tuples, strip scores
+                    if name == "similarity_search_with_score" and isinstance(res, (list, tuple)) and len(res) > 0 and isinstance(res[0], (list, tuple)):
+                        return [t[0] for t in res][: self.k]
+                    # normalize lists
+                    if isinstance(res, list):
+                        return res[: self.k]
+                    # if generator, convert
+                    if hasattr(res, "__iter__"):
+                        return list(res)[: self.k]
                 except Exception:
+                    # try next candidate
                     pass
 
-        # 4. Many vectorstores expose similarity_search
-        if hasattr(r, "similarity_search"):
-            try:
-                return r.similarity_search(query, k=self.k)
-            except TypeError:
-                # some signatures differ
-                try:
-                    return r.similarity_search(query)[: self.k]
-                except Exception:
-                    pass
+        # 2) Scan attributes for anything that looks like a search/retrieve function
+        keywords = ("search", "similar", "retrieve", "query", "find", "get_relevant")
+        for attr in dir(r):
+            lname = attr.lower()
+            if any(kw in lname for kw in keywords):
+                fn = getattr(r, attr)
+                if callable(fn):
+                    # de-prioritize private/protected attributes
+                    if attr.startswith("_"):
+                        continue
+                    try:
+                        res = self._try_call(fn, query)
+                        # If returns tuples with score, strip
+                        if isinstance(res, (list, tuple)) and len(res) > 0 and isinstance(res[0], (list, tuple)):
+                            return [t[0] for t in res][: self.k]
+                        if isinstance(res, list):
+                            return res[: self.k]
+                        if hasattr(res, "__iter__"):
+                            return list(res)[: self.k]
+                    except Exception:
+                        # keep trying other attributes
+                        pass
 
-        # 5. similarity_search_with_score returns tuples (doc, score)
-        if hasattr(r, "similarity_search_with_score"):
-            try:
-                res = r.similarity_search_with_score(query, k=self.k)
-                # return only the docs
-                return [t[0] for t in res][: self.k]
-            except Exception:
-                pass
-
-        # 6. If it's the underlying vectorstore object (e.g., FAISS) with no retriever wrapper,
-        # try calling similarity_search directly on it
-        if hasattr(r, "similarity_search_by_vector"):
-            try:
-                return r.similarity_search_by_vector(query, k=self.k)
-            except Exception:
-                pass
-
-        # 7. If none of the above worked, fall back to calling a generic method if present
-        for candidate in ("search", "query", "similar_search"):
-            if hasattr(r, candidate):
-                fn = getattr(r, candidate)
-                try:
-                    return fn(query)[: self.k]
-                except Exception:
-                    pass
-
-        # Last-ditch: if retriever is a callable (rare), call it
+        # 3) If retriever itself is callable, try calling it
         if callable(r):
             try:
                 res = r(query)
                 if isinstance(res, list):
                     return res[: self.k]
+                if hasattr(res, "__iter__"):
+                    return list(res)[: self.k]
             except Exception:
                 pass
 
-        # Nothing worked — raise informative error
+        # Nothing worked — raise informative error with some diagnostics
+        # Provide a short diagnostic listing candidate attribute names we tried
+        tried_attrs = [a for a in dir(r) if any(kw in a.lower() for kw in keywords)]
         raise RuntimeError(
             "Retriever does not expose a known API for fetching documents. "
-            "Expected one of: get_relevant_documents, get_relevant_entries, retrieve, "
-            "similarity_search, similarity_search_with_score, similarity_search_by_vector."
+            "Tried common names and scanned attributes. Candidate callable attributes matching "
+            f"{keywords} found: {tried_attrs}. If your vectorstore uses a custom API, update llm_chain.py "
+            "to map its retrieval method to a list of documents."
         )
 
     def __call__(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -225,14 +252,13 @@ def setup_qa_chain(vectorstore, k: int = 4):
     try:
         retriever = vectorstore.as_retriever(search_kwargs={"k": k})
     except Exception:
-        # if as_retriever exists but raised, try without kwargs
         try:
             if hasattr(vectorstore, "as_retriever"):
                 retriever = vectorstore.as_retriever()
         except Exception:
             retriever = None
 
-    # If we still don't have a retriever, try to use the vectorstore object directly
+    # If we still don't have a retriever, use the vectorstore itself
     if retriever is None:
         retriever = vectorstore
 
@@ -248,7 +274,6 @@ def setup_qa_chain(vectorstore, k: int = 4):
             )
             return qa
         except Exception:
-            # fall through to fallback
             pass
 
     # Fallback to SimpleRetrievalQA
