@@ -1,29 +1,29 @@
-streamlit>=1.33
-langchain>=0.1.14
-langchain-community>=0.0.30
+streamlit>=1.33.0
+
+# LangChain core (stable 0.1.x series that includes langchain.chains, prompts, etc.)
+langchain==0.1.20
+
+# Community vectorstore integrations (FAISS wrapper, etc.)
+langchain-community==0.0.30
+
+# OpenAI wrapper maintained separately
+langchain-openai==0.0.8
+
+# OpenAI python client
+openai>=1.12.0
+
+# Vector DB and embeddings support
 faiss-cpu
+chromadb
 sentence-transformers
+
+# PDF parsing, web scraping and helpers
 pypdf
 beautifulsoup4
 huggingface_hub
-openai>=1.0
-langchain>=0.1
-langchain>=0.0.350
-langchain-text-splitters
-streamlit
-langchain>=0.0.350
-langchain-community
-langchain-text-splitters
-chromadb
+
+# Tokenizer helpers
 tiktoken
-langchain-openai
-openai
-langchain-classic
-langchain-openai
-openai
-langchain>=0.0.350
-langchain-community
+
+# Optional / helper packages
 langchain-text-splitters
-streamlit
-chromadb
-tiktoken
