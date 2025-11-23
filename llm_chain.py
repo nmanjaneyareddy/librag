@@ -1,5 +1,5 @@
 # llm_chain.py
-# Place this next to appy.py
+# Replace your current llm_chain.py with this file.
 
 from typing import Any, Dict, List
 
@@ -10,11 +10,10 @@ except Exception:
     try:
         from langchain.prompts import PromptTemplate
     except Exception:
-        # last-ditch fallback (some distributions use langchain_core)
         try:
             from langchain_core.prompts.prompt import PromptTemplate  # type: ignore
         except Exception:
-            PromptTemplate = None  # we'll build strings directly if missing
+            PromptTemplate = None
 
 # LLM selection with fallbacks
 LLM_FACTORY = None
@@ -27,7 +26,6 @@ try:
     LLM_FACTORY = _make_llm
 except Exception:
     try:
-        # older/alternate API
         from langchain.llms import OpenAI
 
         def _make_llm():
@@ -37,73 +35,62 @@ except Exception:
     except Exception:
         LLM_FACTORY = None
 
-# Try to import RetrievalQA; if not available we'll provide a simple fallback implementation
+# Try to import RetrievalQA; if not present we'll fallback
 _RETRIEVAL_QA = None
 try:
     from langchain.chains import RetrievalQA
 
     _RETRIEVAL_QA = RetrievalQA
 except Exception:
-    # try alternative common locations (some versions differ)
     try:
         from langchain.chains.question_answering import RetrievalQA  # type: ignore
         _RETRIEVAL_QA = RetrievalQA
     except Exception:
         _RETRIEVAL_QA = None
 
-# Small helper to call different LLM wrapper APIs safely
+# Helper to call LLM with common APIs
 def _call_llm(llm, prompt_text: str) -> str:
-    """
-    Try several common ways to call a LangChain LLM wrapper and return text.
-    """
-    # 1) predict
     if hasattr(llm, "predict"):
         try:
             return llm.predict(prompt_text)
         except Exception:
             pass
-
-    # 2) __call__
     try:
-        return llm(prompt_text)  # many wrappers implement __call__
+        return llm(prompt_text)
     except Exception:
         pass
-
-    # 3) generate -> extract text
     if hasattr(llm, "generate"):
         try:
             res = llm.generate([prompt_text])
-            # try to extract a sensible text representation
-            # res.generations is usually a list of list of Generation objects
             gens = getattr(res, "generations", None)
             if gens and isinstance(gens, list) and len(gens) > 0 and len(gens[0]) > 0:
                 txt = getattr(gens[0][0], "text", None)
                 if txt:
                     return txt
-            # some versions put text elsewhere:
-            text = str(res)
-            return text
+            return str(res)
         except Exception:
             pass
-
-    # fallback: raise informative error
     raise RuntimeError(
         "Unable to call LLM: wrapper does not support predict/__call__/generate the way this code expects."
     )
 
-# Fallback RetrievalQA-like wrapper
+
 class SimpleRetrievalQA:
     """
     Minimal retrieval + LLM wrapper used when langchain's RetrievalQA isn't available.
-    Expects a retriever (object with get_relevant_documents(query)->List[Document])
-    and an llm factory (callable returning an llm wrapper).
+    Works with retrievers exposing any of the common method names:
+      - get_relevant_documents(query)
+      - get_relevant_entries(query)
+      - retrieve(query)
+      - similarity_search(query, k=...)
+      - similarity_search_with_score(query, k=...)
+      - similarity_search_by_vector(...) (less common)
     """
 
     def __init__(self, retriever, llm_factory, prompt_template: str = None, k: int = 4):
         self.retriever = retriever
         self.llm = llm_factory() if llm_factory is not None else None
         self.k = k
-        # default prompt if PromptTemplate isn't available
         self.prompt_template = (
             prompt_template
             or (
@@ -112,26 +99,95 @@ class SimpleRetrievalQA:
             )
         )
 
+    def _fetch_docs(self, query: str) -> List[Any]:
+        """
+        Normalise many different retriever APIs to a list of document-like objects.
+        """
+        r = self.retriever
+
+        # If object is a retriever wrapper (common), try known retriever method names first
+        # 1. LangChain retriever standard
+        if hasattr(r, "get_relevant_documents"):
+            return r.get_relevant_documents(query)[: self.k]
+
+        # 2. Some libraries use this
+        if hasattr(r, "get_relevant_entries"):
+            return r.get_relevant_entries(query)[: self.k]
+
+        # 3. Common alternative name
+        if hasattr(r, "retrieve"):
+            try:
+                return r.retrieve(query)[: self.k]
+            except TypeError:
+                # maybe retrieve(query, k=...) signature
+                try:
+                    return r.retrieve(query, k=self.k)[: self.k]
+                except Exception:
+                    pass
+
+        # 4. Many vectorstores expose similarity_search
+        if hasattr(r, "similarity_search"):
+            try:
+                return r.similarity_search(query, k=self.k)
+            except TypeError:
+                # some signatures differ
+                try:
+                    return r.similarity_search(query)[: self.k]
+                except Exception:
+                    pass
+
+        # 5. similarity_search_with_score returns tuples (doc, score)
+        if hasattr(r, "similarity_search_with_score"):
+            try:
+                res = r.similarity_search_with_score(query, k=self.k)
+                # return only the docs
+                return [t[0] for t in res][: self.k]
+            except Exception:
+                pass
+
+        # 6. If it's the underlying vectorstore object (e.g., FAISS) with no retriever wrapper,
+        # try calling similarity_search directly on it
+        if hasattr(r, "similarity_search_by_vector"):
+            try:
+                return r.similarity_search_by_vector(query, k=self.k)
+            except Exception:
+                pass
+
+        # 7. If none of the above worked, fall back to calling a generic method if present
+        for candidate in ("search", "query", "similar_search"):
+            if hasattr(r, candidate):
+                fn = getattr(r, candidate)
+                try:
+                    return fn(query)[: self.k]
+                except Exception:
+                    pass
+
+        # Last-ditch: if retriever is a callable (rare), call it
+        if callable(r):
+            try:
+                res = r(query)
+                if isinstance(res, list):
+                    return res[: self.k]
+            except Exception:
+                pass
+
+        # Nothing worked — raise informative error
+        raise RuntimeError(
+            "Retriever does not expose a known API for fetching documents. "
+            "Expected one of: get_relevant_documents, get_relevant_entries, retrieve, "
+            "similarity_search, similarity_search_with_score, similarity_search_by_vector."
+        )
+
     def __call__(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         query = inputs.get("query") or inputs.get("question") or ""
         if not query:
             return {"result": "", "source_documents": []}
 
-        # fetch documents (try several retriever methods)
-        docs = []
-        if hasattr(self.retriever, "get_relevant_documents"):
-            docs = self.retriever.get_relevant_documents(query)[: self.k]
-        elif hasattr(self.retriever, "get_relevant_entries"):
-            docs = self.retriever.get_relevant_entries(query)[: self.k]
-        elif hasattr(self.retriever, "retrieve"):
-            docs = self.retriever.retrieve(query)[: self.k]
-        else:
-            raise RuntimeError("Retriever does not expose a known API for fetching documents.")
+        docs = self._fetch_docs(query)
 
         # build context text
         parts = []
         for d in docs:
-            # Documents may be dict-like or objects with .page_content / .content
             content = None
             if isinstance(d, dict):
                 content = d.get("page_content") or d.get("content") or str(d)
@@ -140,9 +196,8 @@ class SimpleRetrievalQA:
             parts.append(content)
         context = "\n---\n".join([p for p in parts if p])
 
-        # apply prompt
+        # prepare prompt text (use PromptTemplate if available)
         if PromptTemplate and isinstance(PromptTemplate, type):
-            # If we have PromptTemplate class, we can use it to render
             try:
                 prompt = PromptTemplate(template=self.prompt_template, input_variables=["context", "question"])
                 prompt_text = prompt.format(context=context, question=query)
@@ -151,9 +206,8 @@ class SimpleRetrievalQA:
         else:
             prompt_text = self.prompt_template.format(context=context, question=query)
 
-        # call llm
         if self.llm is None:
-            raise ImportError("No LLM available. Install OpenAI/ChatOpenAI or update llm_chain.py to use another LLM.")
+            raise ImportError("No LLM available. Install an LLM or update llm_chain.py to use another backend.")
 
         answer = _call_llm(self.llm, prompt_text)
         return {"result": answer, "source_documents": docs}
@@ -161,33 +215,28 @@ class SimpleRetrievalQA:
 
 def setup_qa_chain(vectorstore, k: int = 4):
     """
-    Returns a callable QA chain. Preferred: uses langchain.RetrievalQA if available.
-    Fallback: uses SimpleRetrievalQA to avoid import-time failures.
+    Return a callable QA chain; prefer langchain's RetrievalQA if present, otherwise fallback.
     """
     if vectorstore is None:
         raise ValueError("vectorstore must be provided to setup_qa_chain()")
 
-    # make retriever
+    # Try to get a retriever wrapper first
+    retriever = None
     try:
         retriever = vectorstore.as_retriever(search_kwargs={"k": k})
     except Exception:
-        # some vectorstores expose a different method name
-        if hasattr(vectorstore, "as_retriever"):
-            retriever = vectorstore.as_retriever()
-        else:
-            # try building a simple retriever-like wrapper if vectorstore has similarity_search
-            if hasattr(vectorstore, "similarity_search"):
-                class _SimpleRetriever:
-                    def __init__(self, vs, k):
-                        self.vs = vs
-                        self.k = k
-                    def get_relevant_documents(self, q):
-                        return self.vs.similarity_search(q, k=self.k)
-                retriever = _SimpleRetriever(vectorstore, k)
-            else:
-                raise
+        # if as_retriever exists but raised, try without kwargs
+        try:
+            if hasattr(vectorstore, "as_retriever"):
+                retriever = vectorstore.as_retriever()
+        except Exception:
+            retriever = None
 
-    # If native RetrievalQA is available, use it (clean integration)
+    # If we still don't have a retriever, try to use the vectorstore object directly
+    if retriever is None:
+        retriever = vectorstore
+
+    # If native RetrievalQA available and we have LLM factory, use it
     if _RETRIEVAL_QA is not None and LLM_FACTORY is not None:
         try:
             llm = LLM_FACTORY()
@@ -199,8 +248,8 @@ def setup_qa_chain(vectorstore, k: int = 4):
             )
             return qa
         except Exception:
-            # if something goes wrong, fall back to simple wrapper below
+            # fall through to fallback
             pass
 
-    # Fallback: use our SimpleRetrievalQA
+    # Fallback to SimpleRetrievalQA
     return SimpleRetrievalQA(retriever=retriever, llm_factory=LLM_FACTORY, k=k)
