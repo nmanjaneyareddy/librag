@@ -1,8 +1,9 @@
 # llm_chain.py
-# Replace the whole file with this content (ensures robust retriever discovery).
+# Defensive version: returns diagnostics instead of raising when retriever API is unknown.
 
 from typing import Any, Dict, List
 import inspect
+import traceback
 
 # PromptTemplate import with fallbacks
 try:
@@ -78,8 +79,8 @@ def _call_llm(llm, prompt_text: str) -> str:
 
 class SimpleRetrievalQA:
     """
-    Minimal retrieval + LLM wrapper used when langchain's RetrievalQA isn't available.
-    Uses a very defensive _fetch_docs that attempts many call patterns.
+    Defensive wrapper. On failure it returns a result dict that contains a clear diagnostic
+    instead of raising, so the Streamlit app can continue running and show diagnostics.
     """
 
     def __init__(self, retriever, llm_factory, prompt_template: str = None, k: int = 4):
@@ -95,122 +96,126 @@ class SimpleRetrievalQA:
         )
 
     def _try_call(self, fn, query: str):
-        """Try calling fn with several plausible signatures and return result or raise."""
+        """Try common function signatures for a candidate method."""
+        # try several call signatures; raise if the function raises (so we can try other candidates)
         try:
-            # try (query, k=...)
             try:
                 return fn(query, k=self.k)
             except TypeError:
                 pass
-            # try (query, k)
             try:
                 return fn(query, self.k)
             except TypeError:
                 pass
-            # try (query,)
             try:
                 return fn(query)
             except TypeError:
                 pass
-            # try no args
             try:
                 return fn()
             except TypeError:
                 pass
         except Exception:
-            # If the function raised for this query, propagate up to allow trying another function.
+            # bubble up the exception so callers can continue trying other candidates
             raise
         raise TypeError("Function did not accept common signatures")
 
-    def _fetch_docs(self, query: str) -> List[Any]:
+    def _fetch_docs_with_diagnostics(self, query: str) -> Dict[str, Any]:
         """
-        Very defensive method detection:
-         - tries known method names first
-         - then scans all attributes for callable names containing keywords
-         - tries calling with multiple signatures
+        Attempts many call patterns. Returns dict:
+         - success: bool
+         - docs: list (if success)
+         - tried: list of candidate attribute names considered
+         - error: optional error string
         """
         r = self.retriever
+        tried = []
+        keywords = ("search", "similar", "retrieve", "query", "find", "get_relevant")
 
-        # 1) Known names first (fast)
-        candidates = [
-            ("get_relevant_documents", True),
-            ("get_relevant_entries", True),
-            ("retrieve", True),
-            ("similarity_search", True),
-            ("similarity_search_with_score", True),
-            ("similarity_search_by_vector", True),
-            ("search", True),
-            ("query", True),
-            ("similar_search", True),
+        # 1) Known names first
+        names = [
+            "get_relevant_documents",
+            "get_relevant_entries",
+            "retrieve",
+            "similarity_search",
+            "similarity_search_with_score",
+            "similarity_search_by_vector",
+            "search",
+            "query",
+            "similar_search",
         ]
-        for name, _ in candidates:
+        for name in names:
             fn = getattr(r, name, None)
             if callable(fn):
+                tried.append(name)
                 try:
                     res = self._try_call(fn, query)
-                    # if similarity_search_with_score returns (doc, score) tuples, strip scores
+                    # normalize similarity_search_with_score
                     if name == "similarity_search_with_score" and isinstance(res, (list, tuple)) and len(res) > 0 and isinstance(res[0], (list, tuple)):
-                        return [t[0] for t in res][: self.k]
-                    # normalize lists
+                        return {"success": True, "docs": [t[0] for t in res][: self.k], "tried": tried}
                     if isinstance(res, list):
-                        return res[: self.k]
-                    # if generator, convert
+                        return {"success": True, "docs": res[: self.k], "tried": tried}
                     if hasattr(res, "__iter__"):
-                        return list(res)[: self.k]
-                except Exception:
-                    # try next candidate
-                    pass
+                        return {"success": True, "docs": list(res)[: self.k], "tried": tried}
+                except Exception as e:
+                    tried.append(f"{name}: raised {type(e).__name__}")
 
-        # 2) Scan attributes for anything that looks like a search/retrieve function
-        keywords = ("search", "similar", "retrieve", "query", "find", "get_relevant")
+        # 2) Scan attributes that contain keywords
+        scanned = []
         for attr in dir(r):
-            lname = attr.lower()
-            if any(kw in lname for kw in keywords):
+            if any(kw in attr.lower() for kw in keywords):
                 fn = getattr(r, attr)
                 if callable(fn):
-                    # de-prioritize private/protected attributes
-                    if attr.startswith("_"):
-                        continue
+                    scanned.append(attr)
                     try:
                         res = self._try_call(fn, query)
-                        # If returns tuples with score, strip
                         if isinstance(res, (list, tuple)) and len(res) > 0 and isinstance(res[0], (list, tuple)):
-                            return [t[0] for t in res][: self.k]
+                            return {"success": True, "docs": [t[0] for t in res][: self.k], "tried": names + scanned}
                         if isinstance(res, list):
-                            return res[: self.k]
+                            return {"success": True, "docs": res[: self.k], "tried": names + scanned}
                         if hasattr(res, "__iter__"):
-                            return list(res)[: self.k]
-                    except Exception:
-                        # keep trying other attributes
-                        pass
+                            return {"success": True, "docs": list(res)[: self.k], "tried": names + scanned}
+                    except Exception as e:
+                        scanned.append(f"{attr}: raised {type(e).__name__}")
 
-        # 3) If retriever itself is callable, try calling it
+        # 3) If retriever itself is callable
         if callable(r):
             try:
                 res = r(query)
                 if isinstance(res, list):
-                    return res[: self.k]
+                    return {"success": True, "docs": res[: self.k], "tried": names + scanned}
                 if hasattr(res, "__iter__"):
-                    return list(res)[: self.k]
-            except Exception:
-                pass
+                    return {"success": True, "docs": list(res)[: self.k], "tried": names + scanned}
+            except Exception as e:
+                tried.append(f"callable_retriever: raised {type(e).__name__}")
 
-        # Nothing worked — raise informative error with some diagnostics
-        # Provide a short diagnostic listing candidate attribute names we tried
-        tried_attrs = [a for a in dir(r) if any(kw in a.lower() for kw in keywords)]
-        raise RuntimeError(
-            "Retriever does not expose a known API for fetching documents. "
-            "Tried common names and scanned attributes. Candidate callable attributes matching "
-            f"{keywords} found: {tried_attrs}. If your vectorstore uses a custom API, update llm_chain.py "
-            "to map its retrieval method to a list of documents."
-        )
+        # Nothing worked
+        return {"success": False, "docs": [], "tried": names + scanned, "error": "No usable retrieval method found."}
 
     def __call__(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
         query = inputs.get("query") or inputs.get("question") or ""
         if not query:
-            return {"result": "", "source_documents": []}
+            return {"result": "", "source_documents": [], "diagnostic": {"note": "empty query"}}
 
-        docs = self._fetch_docs(query)
+        diag = self._fetch_docs_with_diagnostics(query)
+
+        if not diag.get("success", False):
+            # Return a helpful error message instead of raising
+            diagnostic_text = (
+                "LLM chain could not find a retrieval method on the provided vectorstore/retriever.\n\n"
+                f"Tried candidates and scanned attributes (some recorded): {diag.get('tried')}\n\n"
+                f"Error: {diag.get('error')}\n\n"
+                "To fix: tell me which attribute names exist on your vectorstore (paste the list shown below),\n"
+                "or run `dir(vectorstore)` in your environment and paste the output here.\n"
+            )
+            # Also attach shorter diagnostic fields for programmatic inspection
+            return {
+                "result": diagnostic_text,
+                "source_documents": [],
+                "diagnostic": {"tried": diag.get("tried"), "error": diag.get("error")},
+            }
+
+        docs = diag["docs"]
 
         # build context text
         parts = []
@@ -234,11 +239,24 @@ class SimpleRetrievalQA:
             prompt_text = self.prompt_template.format(context=context, question=query)
 
         if self.llm is None:
-            raise ImportError("No LLM available. Install an LLM or update llm_chain.py to use another backend.")
+            # Return a clear diagnostic rather than raising so Streamlit UI stays alive
+            return {
+                "result": "No LLM is available in this environment. Install an LLM or configure LLM_FACTORY in llm_chain.py.",
+                "source_documents": docs,
+                "diagnostic": {"note": "no_llm"}
+            }
 
-        answer = _call_llm(self.llm, prompt_text)
-        return {"result": answer, "source_documents": docs}
+        try:
+            answer = _call_llm(self.llm, prompt_text)
+        except Exception as e:
+            tb = traceback.format_exc()
+            return {
+                "result": f"LLM invocation failed: {type(e).__name__}: {e}\n\nTraceback:\n{tb}",
+                "source_documents": docs,
+                "diagnostic": {"llm_error": str(e)}
+            }
 
+        return {"result": answer, "source_documents": docs, "diagnostic": {"tried": diag.get("tried")}}
 
 def setup_qa_chain(vectorstore, k: int = 4):
     """
@@ -276,5 +294,5 @@ def setup_qa_chain(vectorstore, k: int = 4):
         except Exception:
             pass
 
-    # Fallback to SimpleRetrievalQA
+    # Fallback to our defensive SimpleRetrievalQA
     return SimpleRetrievalQA(retriever=retriever, llm_factory=LLM_FACTORY, k=k)
