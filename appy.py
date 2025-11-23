@@ -1,60 +1,48 @@
-# /mount/src/librag/llm_chain.py
-# DeepSeek-compatible LLM factory + RetrievalQA setup
-# Expects Streamlit secrets to contain DEEPSEEK_API_KEY
-
-
+# /mount/src/librag/app.py
 import streamlit as st
+from llm_chain import setup_qa_chain
+# use your uploaded vectorstore loader path:
+# /mnt/data/vectorstore.py - adjust import if your loader function name differs
+try:
+    # if your vectorstore.py defines load_vector_store()
+    from vectorstore import load_vector_store
+    vectorstore = load_vector_store()
+except Exception:
+    try:
+        from vectorstore import vectorstore as vectorstore  # maybe a variable was exported
+    except Exception:
+        st.error("Could not load vectorstore. Ensure /mnt/data/vectorstore.py has load_vector_store() or exports 'vectorstore'.")
+        st.stop()
 
-# imports as in your snippet (will need langchain installed)
-from langchain_openai import ChatOpenAI
-from langchain.chains import create_retrieval_chain
-from langchain.prompts import PromptTemplate
+st.title("RAG QA App")
 
+try:
+    qa_chain = setup_qa_chain(vectorstore)
+except Exception as e:
+    st.error(f"setup_qa_chain failed: {type(e).__name__}: {e}")
+    st.stop()
 
-def setup_qa_chain(vectorstore):
-    """
-    Create and return a RetrievalQA chain using a DeepSeek-compatible
-    ChatOpenAI wrapper. Assumes Streamlit secrets contains DEEPSEEK_API_KEY.
+user_input = st.text_input("Ask a question about your documents")
 
-    vectorstore: a LangChain-style vectorstore (must implement as_retriever()).
-    """
-
-    # ✅ DeepSeek API Key & Base URL — stored in Streamlit secrets
-    deepseek_api_key = st.secrets["DEEPSEEK_API_KEY"]
-    deepseek_base_url = "https://api.deepseek.com/v1"  # adjust if DeepSeek base differs
-
-    # ✅ Initialize the LLM
-    # Note: ChatOpenAI wrapper accepts openai_api_key and openai_api_base kwargs in many setups.
-    # If your langchain distribution uses a different constructor, adjust accordingly.
-    llm = ChatOpenAI(
-        model_name="deepseek-chat",     # change to actual model name if needed
-        temperature=0.2,
-        max_tokens=512,
-        openai_api_key=deepseek_api_key,
-        openai_api_base=deepseek_base_url
-    )
-
-    # ✅ Prompt
-    prompt = PromptTemplate(
-        input_variables=["context", "question"],
-        template="""
-Use the following context to answer the user's question clearly and concisely.
-
-Context:
-{context}
-
-Question:
-{question}
-
-Answer:
-"""
-    )
-
-    # Build and return RetrievalQA chain
-    return RetrievalQA.from_chain_type(
-        llm=llm,
-        retriever=vectorstore.as_retriever(),
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=False
-    )
+if user_input:
+    st.write("Querying...")
+    try:
+        if hasattr(qa_chain, "invoke"):
+            out = qa_chain.invoke({"input": user_input})
+            # new-style return keys
+            answer = out.get("answer") or out.get("result") or out.get("output_text") or str(out)
+        else:
+            out = qa_chain({"query": user_input})
+            if isinstance(out, dict):
+                answer = out.get("result") or out.get("answer") or out.get("text") or str(out)
+            else:
+                answer = str(out)
+        st.subheader("Answer:")
+        st.write(answer)
+        # show diagnostic if present
+        if isinstance(out, dict) and out.get("diagnostic"):
+            st.caption("Diagnostic:")
+            st.json(out.get("diagnostic"))
+    except Exception as e:
+        st.error(f"Chain invocation failed: {type(e).__name__}: {e}")
+        raise
