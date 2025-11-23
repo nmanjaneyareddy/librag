@@ -1,159 +1,153 @@
-# /mnt/data/vectorstore.py
-# Minimal FAISS vectorstore loader WITHOUT langchain.
-# Exposes load_vector_store() and returns an object with:
-#   - similarity_search(query, k)
-#   - as_retriever() -> object with get_relevant_documents(query)
-#
-# Requirements (add to requirements.txt): pypdf, sentence-transformers, faiss-cpu, numpy
+# Patched vectorstore.py — searches BOTH data/documents and /mnt/data
+# Works with FAISS, sentence-transformers, and your existing app.
 
 import os
 from typing import List, Dict, Any
 import numpy as np
 
-# OPTIONAL: change where your documents live
-DOCS_DIR = "data/documents"
-INDEX_DIR = "faiss_index_np"  # folder where we save index + metadata (optional)
+# Search locations for PDF/TXT/MD files
+DOCS_DIRS = [
+    "data/documents",              # Repo folder
+    "/mnt/data"                    # Streamlit uploaded files
+]
 
-# Basic chunker: split text into approx chunk_size characters with overlap
+# Basic chunker
 def _chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
-    if not text:
-        return []
     chunks = []
     start = 0
     L = len(text)
     while start < L:
         end = min(start + chunk_size, L)
-        chunk = text[start:end]
-        chunks.append(chunk)
+        chunks.append(text[start:end])
         start = max(0, end - overlap)
     return chunks
 
-def _load_texts_from_docs(docs_dir: str) -> List[Dict[str, Any]]:
-    """Walk docs_dir and return list of items {'id': , 'text': , 'meta': }"""
+def _load_all_docs() -> List[Dict[str, Any]]:
+    """Walk all DOCS_DIRS and return a list of chunked text documents."""
     items = []
-    if not os.path.exists(docs_dir):
-        return items
     idx = 0
     from pypdf import PdfReader
-    for root, _, files in os.walk(docs_dir):
-        for fname in files:
-            path = os.path.join(root, fname)
-            lower = fname.lower()
-            try:
-                if lower.endswith(".pdf"):
-                    text = []
-                    reader = PdfReader(path)
-                    for p in reader.pages:
-                        try:
-                            text.append(p.extract_text() or "")
-                        except Exception:
-                            # skip extract errors for that page
-                            pass
-                    text = "\n".join(text)
-                elif lower.endswith(".txt") or lower.endswith(".md"):
-                    with open(path, "r", encoding="utf-8") as f:
-                        text = f.read()
-                else:
-                    # skip other file types
-                    continue
-            except Exception:
-                # skip unreadable files
-                continue
 
-            chunks = _chunk_text(text)
-            for i, c in enumerate(chunks):
-                items.append({"id": f"{idx}", "text": c, "meta": {"source": path, "chunk": i}})
-                idx += 1
+    for docs_dir in DOCS_DIRS:
+        if not os.path.exists(docs_dir):
+            continue
+
+        for root, _, files in os.walk(docs_dir):
+            for fname in files:
+                path = os.path.join(root, fname)
+                lower = fname.lower()
+
+                try:
+                    # PDF
+                    if lower.endswith(".pdf"):
+                        text = []
+                        reader = PdfReader(path)
+                        for p in reader.pages:
+                            try:
+                                text.append(p.extract_text() or "")
+                            except:
+                                continue
+                        full_text = "\n".join(text)
+
+                    # Text files
+                    elif lower.endswith(".txt") or lower.endswith(".md"):
+                        with open(path, "r", encoding="utf-8") as f:
+                            full_text = f.read()
+
+                    else:
+                        continue
+
+                    # Split into chunks
+                    chunks = _chunk_text(full_text)
+                    for i, c in enumerate(chunks):
+                        items.append({
+                            "id": f"{idx}",
+                            "text": c,
+                            "meta": {"source": path, "chunk": i}
+                        })
+                        idx += 1
+
+                except Exception as e:
+                    print(f"⚠️ Failed loading {path}: {e}")
+                    continue
+
     return items
 
-# Simple wrapper store that holds embeddings, texts and provides similarity_search
+
+# --- FAISS vectorstore wrapper ------------------------------------------------
+
 class SimpleFAISSVectorStore:
-    def __init__(self, embeddings_model_name: str = "sentence-transformers/all-mpnet-base-v2"):
-        # lazy imports to surface missing package errors only when needed
-        try:
-            from sentence_transformers import SentenceTransformer
-        except Exception as e:
-            raise ImportError("sentence-transformers not installed. Add 'sentence-transformers' to requirements.") from e
+    def __init__(self, model_name="sentence-transformers/all-mpnet-base-v2"):
+        from sentence_transformers import SentenceTransformer
+        import faiss
 
-        try:
-            import faiss
-        except Exception as e:
-            raise ImportError("faiss (faiss-cpu) not installed. Add 'faiss-cpu' to requirements.") from e
+        self.model_name = model_name
+        self.model = SentenceTransformer(model_name)
+        self.index = None
+        self.texts = []
+        self.metas = []
 
-        self._model_name = embeddings_model_name
-        self._sbert = SentenceTransformer(embeddings_model_name)
-        self._index = None  # faiss index
-        self._embeddings = None  # numpy array (N x D)
-        self._metadatas = []  # list of dicts for each vector
-        self._texts = []
-
-    def build(self, docs: List[Dict[str, Any]]):
-        """Build FAISS index from docs (each doc = {'text':..., 'meta':...})"""
+    def build(self, docs):
         import faiss
 
         texts = [d["text"] for d in docs]
-        if len(texts) == 0:
+        if not texts:
             raise ValueError("No documents to build index from.")
-        emb = self._sbert.encode(texts, convert_to_numpy=True, show_progress_bar=True)
-        # ensure float32
-        if emb.dtype != np.float32:
-            emb = emb.astype(np.float32)
-        d = emb.shape[1]
-        index = faiss.IndexFlatL2(d)
-        index.add(emb)
-        self._index = index
-        self._embeddings = emb
-        self._texts = texts
-        self._metadatas = [d.get("meta", {}) for d in docs]
 
-    def similarity_search(self, query: str, k: int = 4):
-        """Return list of simple document-like dicts: {'page_content': text, 'metadata': meta}"""
-        q_emb = self._sbert.encode([query], convert_to_numpy=True)
-        if q_emb.dtype != np.float32:
-            q_emb = q_emb.astype(np.float32)
-        if self._index is None:
-            raise RuntimeError("Index not built yet.")
-        D, I = self._index.search(q_emb, k)
+        embeddings = self.model.encode(texts, convert_to_numpy=True)
+        embeddings = embeddings.astype(np.float32)
+
+        dim = embeddings.shape[1]
+        index = faiss.IndexFlatL2(dim)
+        index.add(embeddings)
+
+        self.index = index
+        self.texts = texts
+        self.metas = [d["meta"] for d in docs]
+
+    def similarity_search(self, query, k=4):
+        q_emb = self.model.encode([query], convert_to_numpy=True).astype(np.float32)
+
+        D, I = self.index.search(q_emb, k)
         results = []
         for score, idx in zip(D[0], I[0]):
-            if idx < 0 or idx >= len(self._texts):
-                continue
-            results.append({"page_content": self._texts[idx], "metadata": self._metadatas[idx], "score": float(score)})
+            if 0 <= idx < len(self.texts):
+                results.append({
+                    "page_content": self.texts[idx],
+                    "metadata": self.metas[idx],
+                    "score": float(score)
+                })
         return results
 
-    def as_retriever(self, search_kwargs: dict = None):
-        """Return an object exposing get_relevant_documents(query) compatible with some code."""
+    def as_retriever(self, search_kwargs=None):
         parent = self
-        class Retriever:
-            def __init__(self, parent, k):
-                self.parent = parent
-                self.k = k or 4
-            def get_relevant_documents(self, query):
-                docs = parent.similarity_search(query, k=self.k)
-                # For compatibility with some flows, return objects with .page_content attribute
-                class DocObj:
-                    def __init__(self, page_content, metadata):
-                        self.page_content = page_content
-                        self.metadata = metadata
-                    def __repr__(self):
-                        return f"<Doc source={self.metadata.get('source')}>"
-                return [DocObj(d["page_content"], d["metadata"]) for d in docs]
         k = 4
-        if search_kwargs and isinstance(search_kwargs, dict):
-            k = search_kwargs.get("k", k)
-        return Retriever(parent, k)
+        if search_kwargs:
+            k = search_kwargs.get("k", 4)
 
-# Public loader function
+        class Retriever:
+            def get_relevant_documents(self, query):
+                docs = parent.similarity_search(query, k)
+                class DocObj:
+                    def __init__(self, text, meta): 
+                        self.page_content = text
+                        self.metadata = meta
+                return [DocObj(d["page_content"], d["metadata"]) for d in docs]
+
+        return Retriever()
+
+
+# --- Public API ---------------------------------------------------------------
+
 def load_vector_store() -> SimpleFAISSVectorStore:
-    """
-    Build or load a simple FAISS vectorstore.
-    - Looks for documents in DOCS_DIR (pdf, txt, md).
-    - Builds an in-memory FAISS index and returns a store object.
-    """
-    items = _load_texts_from_docs(DOCS_DIR)
-    if not items:
-        raise RuntimeError(f"No documents found in {DOCS_DIR}. Put PDFs or .txt files there.")
+    docs = _load_all_docs()
+
+    if not docs:
+        raise RuntimeError(
+            "No documents found in data/documents or /mnt/data.\n"
+            "Make sure igidr_library_details.pdf exists in one of these folders."
+        )
 
     store = SimpleFAISSVectorStore()
-    store.build(items)
+    store.build(docs)
     return store
