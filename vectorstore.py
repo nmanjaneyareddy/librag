@@ -5,11 +5,12 @@ import os
 from typing import List, Dict, Any
 import numpy as np
 
+
 # Search locations for PDF/TXT/MD files
 DOCS_DIRS = [
-    "data/documents",                 # repo documents folder
+    "data/documents",                 # Repo folder
     "/mnt/data",                      # Streamlit uploaded files
-    "/mount/src/librag/data"          # <-- your actual PDF location
+    "/mount/src/librag/data"          # REAL location of your PDF
 ]
 
 # Basic chunker
