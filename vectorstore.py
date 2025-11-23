@@ -7,8 +7,9 @@ import numpy as np
 
 # Search locations for PDF/TXT/MD files
 DOCS_DIRS = [
-    "data/documents",              # Repo folder
-    "/mnt/data"                    # Streamlit uploaded files
+    "data/documents",                 # repo documents folder
+    "/mnt/data",                      # Streamlit uploaded files
+    "/mount/src/librag/data"          # <-- your actual PDF location
 ]
 
 # Basic chunker
