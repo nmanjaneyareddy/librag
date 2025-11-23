@@ -1,28 +1,33 @@
 import streamlit as st
 
 from langchain_openai import ChatOpenAI
-from langchain.chains.retrieval import RetrievalQA
 from langchain.prompts import PromptTemplate
 
-def setup_qa_chain(vectorstore):
-    # ✅ DeepSeek API Key & Base URL
-    deepseek_api_key = st.secrets["DEEPSEEK_API_KEY"]
-    deepseek_base_url = "https://api.deepseek.com/v1"  # Use the actual base if different
+# NEW LangChain RAG imports
+from langchain.chains import create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
-    # ✅ Initialize the LLM
+
+def setup_qa_chain(vectorstore):
+
+    # Load API key
+    deepseek_api_key = st.secrets["DEEPSEEK_API_KEY"]
+    deepseek_base_url = "https://api.deepseek.com/v1"
+
+    # Initialize DeepSeek LLM (via OpenAI-compatible API)
     llm = ChatOpenAI(
-        model_name="deepseek-chat",     # Or the actual model name like "deepseek-coder"
+        model="deepseek-chat",
         temperature=0.2,
         max_tokens=512,
-        openai_api_key=deepseek_api_key,
-        openai_api_base=deepseek_base_url
+        api_key=deepseek_api_key,
+        base_url=deepseek_base_url
     )
 
-    # ✅ Prompt
+    # Prompt Template
     prompt = PromptTemplate(
         input_variables=["context", "question"],
         template="""
-Use the following context to answer the user's question clearly and concisely.
+Use the following context to answer the user's question clearly:
 
 Context:
 {context}
@@ -34,10 +39,18 @@ Answer:
 """
     )
 
-    return RetrievalQA.from_chain_type(
+    # Build "stuff" document QA chain
+    doc_chain = create_stuff_documents_chain(
         llm=llm,
-        retriever=vectorstore.as_retriever(),
-        chain_type="stuff",
-        chain_type_kwargs={"prompt": prompt},
-        return_source_documents=False
+        prompt=prompt
     )
+
+    retriever = vectorstore.as_retriever()
+
+    # Build final Retrieval-Augmented Generation (RAG) chain
+    rag_chain = create_retrieval_chain(
+        retriever=retriever,
+        combine_documents_chain=doc_chain
+    )
+
+    return rag_chain
