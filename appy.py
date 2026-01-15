@@ -71,8 +71,9 @@ from llm_chain import setup_qa_chain
 # /mnt/data/vectorstore.py - adjust import if your loader function name differs
 try:
     # if your vectorstore.py defines load_vector_store()
-    from vectorstore import load_vector_store
-    vectorstore = load_vector_store()
+    from vectorstore import load_or_create_vector_store
+    vectorstore = load_or_create_vector_store()
+
 except Exception:
     try:
         from vectorstore import vectorstore as vectorstore  # maybe a variable was exported
