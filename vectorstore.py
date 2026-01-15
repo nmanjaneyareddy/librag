@@ -1,38 +1,37 @@
 # vectorstore.py
 import os
+import streamlit as st
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.document_loaders import PyPDFLoader
 
 FAISS_DIR = "faiss_index"
-INDEX_FILE = os.path.join(FAISS_DIR, "index.faiss")
 
-def _get_embeddings():
+def _embeddings():
     return HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-def create_vector_store(docs):
+@st.cache_resource(show_spinner="🔄 Building vector store...")
+def load_or_create_vector_store():
     """
-    Create FAISS index from documents and save it locally.
+    Streamlit Cloud–safe:
+    - Builds FAISS index in memory
+    - Caches it across reruns
     """
-    embeddings = _get_embeddings()
-    vectorstore = FAISS.from_documents(docs, embeddings)
-    vectorstore.save_local(FAISS_DIR)
-    return vectorstore
 
-def load_vector_store():
-    """
-    Load FAISS index if it exists, else raise a clear error.
-    """
-    if not os.path.exists(INDEX_FILE):
-        raise FileNotFoundError(
-            "FAISS index not found. Please run create_vector_store(docs) first "
-            "to generate faiss_index/index.faiss"
-        )
+    # 👉 Load documents from repo
+    loader = PyPDFLoader("data/sample.pdf")  # make sure this exists in GitHub
+    docs = loader.load()
 
-    embeddings = _get_embeddings()
-    return FAISS.load_local(
-        FAISS_DIR,
-        embeddings,
-        allow_dangerous_deserialization=True
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=150
     )
+    docs = splitter.split_documents(docs)
+
+    embeddings = _embeddings()
+    vectorstore = FAISS.from_documents(docs, embeddings)
+
+    return vectorstore
