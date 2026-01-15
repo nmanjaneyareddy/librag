@@ -2,8 +2,8 @@
 import streamlit as st
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.document_loaders import PyPDFLoader
 
 @st.cache_resource(show_spinner="🔄 Loading documents and building vector index...")
 def load_or_create_vector_store():
@@ -16,7 +16,7 @@ def load_or_create_vector_store():
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    # Ensure this file exists in GitHub
+    # ⚠️ Ensure this file exists in GitHub
     loader = PyPDFLoader("data/sample.pdf")
     documents = loader.load()
 
