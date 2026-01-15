@@ -3,13 +3,15 @@ import streamlit as st
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+from langchain.chains.retrieval_qa import RetrievalQA
 
 
 def _make_llm():
     api_key = st.secrets.get("DEEPSEEK_API_KEY") or st.secrets.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("Missing OPENAI_API_KEY or DEEPSEEK_API_KEY in Streamlit secrets")
+        raise RuntimeError(
+            "Missing DEEPSEEK_API_KEY or OPENAI_API_KEY in Streamlit secrets"
+        )
 
     return ChatOpenAI(
         model="deepseek-chat",
@@ -22,14 +24,14 @@ def _make_llm():
 
 def setup_qa_chain(vectorstore, k: int = 4):
     if vectorstore is None:
-        raise ValueError("Vectorstore cannot be None")
+        raise ValueError("vectorstore cannot be None")
 
     llm = _make_llm()
 
     prompt = PromptTemplate(
         input_variables=["context", "question"],
         template=(
-            "Use the following context to answer the question clearly.\n\n"
+            "Use the following context to answer the question clearly and concisely.\n\n"
             "Context:\n{context}\n\n"
             "Question:\n{question}\n\n"
             "Answer:"
